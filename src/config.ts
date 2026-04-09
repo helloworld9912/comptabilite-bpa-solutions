@@ -1,11 +1,17 @@
 import type { GeoZone, SaleCategory } from './types.js';
 
-// BPA SOLUTIONS fiscal year: first charge settled to Qonto = 2025-07-29T00:00:00Z
-// All succeeded charges from this date onward belong to the société
+// BPA SOLUTIONS - début d'activité effective = premier encaissement Qonto
+// Immatriculation INPI: 17/06/2025 (création juridique)
+// Début d'exploitation: 29/07/2025 (premier payout sur compte société Qonto)
+// Les charges avant cette date restent sur l'auto-entreprise
 export const BPA_SOLUTIONS_START = new Date('2025-07-29T00:00:00Z');
 export const BPA_SOLUTIONS_START_UNIX = Math.floor(BPA_SOLUTIONS_START.getTime() / 1000);
 export const FISCAL_YEAR_END = new Date('2026-03-31T23:59:59Z');
 export const FISCAL_YEAR_END_UNIX = Math.floor(FISCAL_YEAR_END.getTime() / 1000);
+
+// Compte bancaire Qonto (société BPA SOLUTIONS)
+// Les payouts vers ce compte apparaissent sur le relevé bancaire Qonto
+export const QONTO_BANK_ACCOUNT_ID = 'ba_1RqqHtBsJM7cX1Yeu7G1KP3z';
 
 // 27 EU member states (ISO 3166-1 alpha-2)
 export const EU_COUNTRIES = new Set([

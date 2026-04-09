@@ -4,13 +4,15 @@ import { join } from 'node:path';
 import 'dotenv/config';
 
 import type { SaleCategory, CategorizedTransaction } from './types.js';
-import { MONTH_NAMES_FR, BPA_SOLUTIONS_START_UNIX } from './config.js';
+import { MONTH_NAMES_FR, BPA_SOLUTIONS_START_UNIX, QONTO_BANK_ACCOUNT_ID } from './config.js';
 import { fetchCharges, fetchRefunds, type MonthRange } from './stripe/fetcher.js';
 import { clearCustomerCache } from './stripe/customers.js';
 import { categorizeCharge, categorizeRefund } from './categorize/transaction.js';
 import { buildReport, centsToEur } from './output/report.js';
 import { generateTransactionsCsv, generateSummaryCsv, generateCountryCsv } from './output/csv.js';
 import { downloadReceipts } from './output/receipts.js';
+import { generateMonthlyPdf } from './output/pdf-justificatif.js';
+import { fetchPayoutReconciliation, fetchStandaloneStripeFees } from './stripe/payouts.js';
 
 const program = new Command();
 
@@ -168,10 +170,55 @@ async function runReport(monthStr: string, opts: {
 
   // Fetch data
   console.log('⏳ Récupération des données Stripe...');
-  const [charges, refunds] = await Promise.all([
+
+  // Also fetch next month's payouts to find payouts that contain charges from this month
+  const nextMonthStart = new Date(Date.UTC(year, month, 1)); // month is already 1-based, so this is next month
+  const nextMonthEnd = new Date(Date.UTC(year, month, 16)); // first 15 days of next month
+  const nextMonthRange = {
+    gte: Math.floor(nextMonthStart.getTime() / 1000),
+    lt: Math.floor(nextMonthEnd.getTime() / 1000),
+  };
+
+  const [charges, refunds, payoutsCurrent, payoutsNextMonth, standaloneStripeFees] = await Promise.all([
     fetchCharges(range),
     fetchRefunds(range),
+    fetchPayoutReconciliation(range),
+    fetchPayoutReconciliation(nextMonthRange),
+    fetchStandaloneStripeFees(range),
   ]);
+
+  // Filter payouts to only Qonto bank account
+  const qontoCurrentMonth = payoutsCurrent.filter(p => p.destination === QONTO_BANK_ACCOUNT_ID);
+
+  // From next month's payouts, keep only those containing charges dated in current month
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const monthEnd = new Date(Date.UTC(year, month, 1));
+  const qontoOverflow = payoutsNextMonth
+    .filter(p => p.destination === QONTO_BANK_ACCOUNT_ID)
+    .filter(p => {
+      // Check if any charge/refund in this payout is dated within the current month
+      const hasCurrentMonthCharge = p.charges.some(c => {
+        const d = new Date(c.date);
+        return d >= monthStart && d < monthEnd;
+      });
+      const hasCurrentMonthRefund = p.refunds.some(r => {
+        const d = new Date(r.date);
+        return d >= monthStart && d < monthEnd;
+      });
+      return hasCurrentMonthCharge || hasCurrentMonthRefund;
+    });
+
+  const qontoPayouts = [...qontoCurrentMonth, ...qontoOverflow];
+  console.log(`   ${qontoCurrentMonth.length} payouts Qonto ce mois + ${qontoOverflow.length} du mois suivant (contenant des charges de ce mois)`);
+
+  // Filter standalone fees: remove those already captured in payout reconciliation
+  const payoutFeeIds = new Set(
+    qontoPayouts.flatMap(p => p.stripeBillingFees.map(f => f.txnId))
+  );
+  const standaloneFees = standaloneStripeFees.filter(f => !payoutFeeIds.has(f.txnId));
+  if (standaloneFees.length > 0) {
+    console.log(`   ${standaloneFees.length} frais Stripe indépendants (non liés à un payout)`)
+  }
 
   // Filter: only charges from BPA SOLUTIONS era (>= 2025-07-29)
   const filteredCharges = charges.filter(ch => ch.created >= BPA_SOLUTIONS_START_UNIX);
@@ -253,6 +300,10 @@ async function runReport(monthStr: string, opts: {
     await writeFile(countryCsvPath, generateCountryCsv(report), 'utf-8');
     filesWritten.push(countryCsvPath);
   }
+
+  // Always generate PDF justificatif (with payout reconciliation)
+  const pdfPath = await generateMonthlyPdf(report, outputDir, qontoPayouts, standaloneFees);
+  filesWritten.push(pdfPath);
 
   console.log('📁 Fichiers: ' + filesWritten.map(f => f.split('/').slice(-2).join('/')).join(', '));
 

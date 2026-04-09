@@ -70,6 +70,13 @@ export interface CategorySummary {
   totalTTC: number;
 }
 
+export interface B2BreakDown {
+  count: number;
+  totalHT: number;
+  totalTVA: number;
+  totalTTC: number;
+}
+
 export interface ZoneSummary {
   zone: GeoZone;
   label: string;
@@ -78,6 +85,8 @@ export interface ZoneSummary {
   totalTVA: number;
   totalTTC: number;
   countries: Record<string, { count: number; totalTTC: number }>;
+  b2b: B2BreakDown; // clients ayant fourni un n° TVA
+  b2c: B2BreakDown; // particuliers
 }
 
 export interface VatRateSummary {
@@ -87,6 +96,28 @@ export interface VatRateSummary {
   totalHT: number;
   totalTVA: number;
   totalTTC: number;
+  b2b: B2BreakDown; // clients ayant fourni un n° TVA
+  b2c: B2BreakDown; // particuliers
+  // Only for exonéré (rate=0): breakdown by exemption reason
+  exemptByReason?: {
+    reverseCharge: B2BreakDown; // EU B2B reverse charge
+    export: B2BreakDown;        // Hors UE
+  };
+}
+
+export interface OssBreakdown {
+  // Ventes à des particuliers UE (One-Stop Shop)
+  totalCount: number;
+  totalHT: number;
+  totalTVA: number;
+  totalTTC: number;
+  byCountry: Record<string, {
+    count: number;
+    vatRate: number; // taux appliqué
+    totalHT: number;
+    totalTVA: number;
+    totalTTC: number;
+  }>;
 }
 
 export interface FeeSummary {
@@ -119,6 +150,7 @@ export interface MonthlyReport {
   byZone: Record<string, ZoneSummary>;
   byVatRate: Record<string, VatRateSummary>;
   byCountry: Record<string, { count: number; totalHT: number; totalTVA: number; totalTTC: number }>;
+  oss: OssBreakdown;
   transactions: CategorizedTransaction[];
   warnings: string[];
 }
