@@ -5,9 +5,9 @@ import 'dotenv/config';
 
 import type { SaleCategory, CategorizedTransaction } from './types.js';
 import { MONTH_NAMES_FR, BPA_SOLUTIONS_START_UNIX, QONTO_BANK_ACCOUNT_ID } from './config.js';
-import { fetchCharges, fetchRefunds, type MonthRange } from './stripe/fetcher.js';
+import { fetchCharges, fetchRefunds, fetchDisputes, type MonthRange } from './stripe/fetcher.js';
 import { clearCustomerCache } from './stripe/customers.js';
-import { categorizeCharge, categorizeRefund } from './categorize/transaction.js';
+import { categorizeCharge, categorizeRefund, categorizeDispute } from './categorize/transaction.js';
 import { buildReport, centsToEur } from './output/report.js';
 import { generateTransactionsCsv, generateSummaryCsv, generateCountryCsv } from './output/csv.js';
 import { downloadReceipts } from './output/receipts.js';
@@ -179,9 +179,10 @@ async function runReport(monthStr: string, opts: {
     lt: Math.floor(nextMonthEnd.getTime() / 1000),
   };
 
-  const [charges, refunds, payoutsCurrent, payoutsNextMonth, standaloneStripeFees] = await Promise.all([
+  const [charges, refunds, disputes, payoutsCurrent, payoutsNextMonth, standaloneStripeFees] = await Promise.all([
     fetchCharges(range),
     fetchRefunds(range),
+    fetchDisputes(range),
     fetchPayoutReconciliation(range),
     fetchPayoutReconciliation(nextMonthRange),
     fetchStandaloneStripeFees(range),
@@ -223,16 +224,17 @@ async function runReport(monthStr: string, opts: {
   // Filter: only charges from BPA SOLUTIONS era (>= 2025-07-29)
   const filteredCharges = charges.filter(ch => ch.created >= BPA_SOLUTIONS_START_UNIX);
   const filteredRefunds = refunds.filter(r => r.created >= BPA_SOLUTIONS_START_UNIX);
+  const filteredDisputes = disputes.filter(d => d.created >= BPA_SOLUTIONS_START_UNIX);
 
   const skippedCharges = charges.length - filteredCharges.length;
   const skippedRefunds = refunds.length - filteredRefunds.length;
 
-  console.log(`   ${filteredCharges.length} charges, ${filteredRefunds.length} remboursements`);
+  console.log(`   ${filteredCharges.length} charges, ${filteredRefunds.length} remboursements, ${filteredDisputes.length} litiges`);
   if (skippedCharges > 0 || skippedRefunds > 0) {
     console.log(`   (${skippedCharges} charges et ${skippedRefunds} remboursements ignorés - auto-entreprise)`);
   }
 
-  if (filteredCharges.length === 0 && filteredRefunds.length === 0) {
+  if (filteredCharges.length === 0 && filteredRefunds.length === 0 && filteredDisputes.length === 0) {
     console.log('   Aucune transaction BPA SOLUTIONS pour ce mois.');
     return null;
   }
@@ -249,6 +251,11 @@ async function runReport(monthStr: string, opts: {
 
   for (const refund of filteredRefunds) {
     const t = await categorizeRefund(refund, saleType, warnings);
+    if (t) transactions.push(t);
+  }
+
+  for (const dispute of filteredDisputes) {
+    const t = await categorizeDispute(dispute, saleType, warnings);
     if (t) transactions.push(t);
   }
 

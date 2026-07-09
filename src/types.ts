@@ -9,7 +9,7 @@ export interface CustomerInfo {
 
 export type SaleCategory = 'marchandises' | 'produits_finis' | 'services';
 export type GeoZone = 'france' | 'ue' | 'hors_ue';
-export type TransactionType = 'sale' | 'refund' | 'fee' | 'payout' | 'adjustment';
+export type TransactionType = 'sale' | 'refund' | 'dispute' | 'fee' | 'payout' | 'adjustment';
 
 export interface CategorizedTransaction {
   id: string;

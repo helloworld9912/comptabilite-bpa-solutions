@@ -187,6 +187,89 @@ export async function categorizeRefund(
   };
 }
 
+/**
+ * Process a Stripe dispute (chargeback) into a categorized accounting transaction.
+ */
+export async function categorizeDispute(
+  dispute: Stripe.Dispute,
+  defaultSaleType: SaleCategory,
+  warnings: string[],
+): Promise<CategorizedTransaction | null> {
+  // Skip won disputes (no money taken) and warning-only disputes with no debit
+  if (dispute.status === 'won') return null;
+
+  // Check if there's an actual debit (chargeback withdrawal)
+  const balanceTxns = (dispute as any).balance_transactions as Stripe.BalanceTransaction[] | undefined;
+  const hasDebit = balanceTxns?.some(bt => bt.amount < 0) ?? false;
+  if (!hasDebit) {
+    // No money was actually taken, skip
+    return null;
+  }
+
+  const charge = dispute.charge as Stripe.Charge | null;
+  if (!charge || typeof charge === 'string') {
+    warnings.push(`Dispute ${dispute.id}: could not resolve original charge.`);
+    return null;
+  }
+
+  // Resolve customer from original charge
+  const customerId = typeof charge.customer === 'string'
+    ? charge.customer
+    : charge.customer?.id ?? null;
+  const customerInfo = await resolveCustomer(customerId, charge);
+
+  if (customerInfo.country === 'UNKNOWN') {
+    customerInfo.country = 'FR';
+  }
+
+  const zone = classifyZone(customerInfo.country);
+  const vatResult = determineVat(zone, customerInfo.isB2B);
+
+  // Use the actual debit amount from balance transactions (EUR, authoritative)
+  // instead of dispute.amount which is in charge currency
+  const adjustmentBt = balanceTxns?.find(bt => bt.reporting_category === 'dispute' && bt.amount < 0);
+  const amountTTC = adjustmentBt ? Math.abs(adjustmentBt.amount) : dispute.amount;
+  const { amountHT, amountTVA } = splitTTC(amountTTC, vatResult.rate);
+
+  // Find the dispute fee (usually €20 per chargeback)
+  const disputeFee = balanceTxns?.reduce(
+    (sum, bt) => sum + bt.fee, 0
+  ) ?? 0;
+
+  const pcg = getRefundPCGMapping();
+
+  return {
+    id: dispute.id,
+    date: new Date(dispute.created * 1000).toISOString(),
+    type: 'dispute',
+    saleCategory: defaultSaleType,
+    zone,
+    country: customerInfo.country,
+    countryName: getCountryName(customerInfo.country),
+    isB2B: customerInfo.isB2B,
+    vatExempt: vatResult.exempt,
+    vatExemptReason: vatResult.exemptReason,
+    vatRate: vatResult.rate,
+    amountHT: -amountHT,
+    amountTVA: -amountTVA,
+    amountTTC: -amountTTC,
+    originalCurrency: charge.currency.toUpperCase(),
+    originalAmount: -dispute.amount,
+    stripeFee: disputeFee,
+    applicationFee: 0,
+    netAmount: -(amountTTC + disputeFee),
+    pcgAccount: pcg.account,
+    pcgLabel: pcg.label,
+    description: `Litige (chargeback) - ${charge.id}`,
+    stripeCustomerId: customerId ?? undefined,
+    stripeCustomerName: customerInfo.name,
+    stripeCustomerEmail: customerInfo.email,
+    stripeChargeId: typeof dispute.charge === 'string' ? dispute.charge : charge.id,
+    stripeBalanceTransactionId: dispute.balance_transactions?.[0]?.id,
+    receiptUrl: charge.receipt_url ?? undefined,
+  };
+}
+
 function buildDescription(charge: Stripe.Charge, customerName?: string, country?: string): string {
   const parts: string[] = [];
   if (charge.description) parts.push(charge.description);

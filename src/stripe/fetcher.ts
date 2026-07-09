@@ -85,6 +85,26 @@ export async function fetchPayouts(range: MonthRange): Promise<Stripe.Payout[]> 
 }
 
 /**
+ * Fetch all disputes for a month (chargebacks, inquiries, etc.)
+ */
+export async function fetchDisputes(range: MonthRange): Promise<Stripe.Dispute[]> {
+  const stripe = getStripe();
+  const disputes: Stripe.Dispute[] = [];
+
+  for await (const dispute of fetchAll(
+    (params) => stripe.disputes.list(params as Stripe.DisputeListParams),
+    {
+      created: { gte: range.gte, lt: range.lt },
+      expand: ['data.charge', 'data.charge.balance_transaction', 'data.charge.customer', 'data.charge.invoice', 'data.balance_transactions'],
+    },
+  )) {
+    disputes.push(dispute);
+  }
+
+  return disputes;
+}
+
+/**
  * Fetch invoice PDF URL for a given invoice ID.
  */
 export async function getInvoicePdfUrl(invoiceId: string): Promise<string | null> {
