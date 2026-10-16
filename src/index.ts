@@ -13,6 +13,9 @@ import { generateTransactionsCsv, generateSummaryCsv, generateCountryCsv } from 
 import { downloadReceipts } from './output/receipts.js';
 import { generateMonthlyPdf } from './output/pdf-justificatif.js';
 import { fetchPayoutReconciliation, fetchStandaloneStripeFees } from './stripe/payouts.js';
+import { runReport as runStripeReport, monthInterval, STATEMENT_REPORTS } from './stripe/reports.js';
+import { generateStripeStatementPdf } from './output/pdf-statement.js';
+import { getStripe } from './stripe/client.js';
 
 const program = new Command();
 
@@ -64,6 +67,21 @@ program
   .action(async (monthStr: string, opts) => {
     try {
       await runReceipts(monthStr, opts);
+    } catch (err) {
+      console.error('\nErreur:', err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('statement')
+  .description('Générer le relevé de compte Stripe mensuel (solde, virements, transactions/frais) via Stripe Financial Reports')
+  .argument('<month>', 'Mois au format YYYY-MM (ex: 2026-09)')
+  .option('-o, --output <dir>', 'Dossier de sortie', './output')
+  .option('-v, --verbose', 'Afficher les détails', false)
+  .action(async (monthStr: string, opts) => {
+    try {
+      await runStatement(monthStr, opts);
     } catch (err) {
       console.error('\nErreur:', err instanceof Error ? err.message : err);
       process.exit(1);
@@ -355,6 +373,64 @@ async function runReceipts(monthStr: string, opts: {
   }
 
   clearCustomerCache();
+}
+
+// ─── Statement Command (relevé Stripe) ───────────────────────────────────────
+
+async function runStatement(monthStr: string, opts: {
+  output: string;
+  verbose: boolean;
+}) {
+  const { year, month } = parseMonth(monthStr);
+  const mm = String(month).padStart(2, '0');
+
+  console.log(`\n🏦 Relevé de compte Stripe - ${MONTH_NAMES_FR[month - 1]} ${year}`);
+  console.log('─'.repeat(50));
+  console.log('⏳ Génération des rapports Stripe (Financial Reports)...');
+
+  const interval = monthInterval(year, month);
+  const [balance, payouts, activity] = await Promise.all([
+    runStripeReport(STATEMENT_REPORTS.balance, interval, { verbose: opts.verbose }),
+    runStripeReport(STATEMENT_REPORTS.payouts, interval, { verbose: opts.verbose }),
+    runStripeReport(STATEMENT_REPORTS.activity, interval, { verbose: opts.verbose }),
+  ]);
+
+  const outputDir = join(opts.output, `${year}-${mm}`);
+  const reportsDir = join(outputDir, 'stripe-reports');
+  await mkdir(reportsDir, { recursive: true });
+
+  const filesWritten: string[] = [];
+  const csvFiles: [string, string][] = [
+    [`balance_summary_${year}-${mm}.csv`, balance.csv],
+    [`payouts_${year}-${mm}.csv`, payouts.csv],
+    [`balance_change_from_activity_${year}-${mm}.csv`, activity.csv],
+  ];
+  for (const [name, csv] of csvFiles) {
+    const p = join(reportsDir, name);
+    await writeFile(p, csv, 'utf-8');
+    filesWritten.push(p);
+  }
+
+  const account = await getStripe().accounts.retrieve();
+  const pdfPath = await generateStripeStatementPdf({
+    year,
+    month,
+    accountId: account.id,
+    generatedAt: new Date().toISOString(),
+    balance: balance.rows,
+    payouts: payouts.rows,
+    activity: activity.rows,
+  }, outputDir);
+  filesWritten.push(pdfPath);
+
+  // Summary
+  const eurRow = (cat: string) => balance.rows.find(r => r.category === cat && r.currency === 'eur');
+  const fmt = (v?: string) => (v ? parseFloat(v).toFixed(2) : '-');
+  console.log(`\n💰 Solde EUR: ${fmt(eurRow('starting_balance')?.net_amount)} € → ${fmt(eurRow('ending_balance')?.net_amount)} €`);
+  console.log(`   Activité nette: ${fmt(eurRow('activity')?.net_amount)} € | Virements: ${fmt(eurRow('payouts')?.net_amount)} €`);
+  const payoutTotal = payouts.rows.reduce((s, p) => s + parseFloat(p.net || '0'), 0);
+  console.log(`   ${payouts.rows.length} virement(s) pour ${payoutTotal.toFixed(2)} € | ${activity.rows.length} mouvement(s)`);
+  console.log('📁 Fichiers: ' + filesWritten.map(f => f.split('/').slice(-2).join('/')).join(', '));
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@
   "scripts": {
     "report": "tsx src/index.ts report",
     "receipts": "tsx src/index.ts receipts",
+    "statement": "tsx src/index.ts statement",
     "start": "tsx src/index.ts"
   },
   "dependencies": {
